@@ -1,0 +1,115 @@
+# go-owl-migrate 测试数据库环境
+#
+# 快速启动:  cd testdata/db && docker compose up -d
+# 凭证/端口/初始化行为详见同目录 README.md
+#
+# 说明:
+# - 首次启动自动初始化测试数据 (SCOTT/EMP/DEPT/BONUS)；后续启动复用数据卷，不会重复初始化
+# - 重置环境: docker compose down -v (删除数据卷, 下次启动重新初始化)
+# - OpenGauss 官方无 ARM 镜像, Apple Silicon 下以 amd64 模拟运行, 启动较慢属正常现象
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: root123456
+      MYSQL_DATABASE: default_db
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./mysql/setup.sql:/docker-entrypoint-initdb.d/setup.sql:ro
+    ports:
+      - "3306:3306"
+    networks:
+      - app-net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-uroot", "-proot123456"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+      POSTGRES_DB: postgres_db
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/seed_tables.sql:/docker-entrypoint-initdb.d/00_seed_tables.sql:ro
+      - ./postgres/setup.sql:/docker-entrypoint-initdb.d/01_setup.sql:ro
+    ports:
+      - "5432:5432"
+    networks:
+      - app-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # OpenGauss 官方镜像仅 amd64, macOS (Apple Silicon) 下不可用, 故放入 opengauss profile,
+  # 默认 `docker compose up -d` 不启动; Linux 用户启用:
+  #   docker compose --profile opengauss up -d
+  opengauss:
+    image: opengauss/opengauss-server
+    platform: linux/amd64
+    profiles: ["opengauss"]
+    container_name: opengauss
+    privileged: true
+    restart: always
+    environment:
+      GS_PASSWORD: OpenGauss@123
+    volumes:
+      - opengauss-data:/var/lib/opengauss
+    ports:
+      - "5433:5432"
+    networks:
+      - app-net
+    healthcheck:
+      test: ["CMD-SHELL", "gsql -U gaussdb -d postgres -tc 'SELECT 1'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 120s
+
+  # Oracle Free 23ai — ARM 原生镜像（Apple Silicon 不走 x86 模拟，避免 IPC 监听失败）
+  # 走私有镜像源 docker.xuanyuan.run；ORACLE_DATABASE=XEPDB1 保持 PDB 名不变，DSN 无需改动
+  # 首次启动时 001-init-scott.sh 自动执行 scott_seed.sql 创建 SCOTT 测试用户
+  oracle:
+    image: docker.xuanyuan.run/gvenzl/oracle-free:23-slim
+    container_name: oracle
+    restart: always
+    environment:
+      ORACLE_PASSWORD: Oracle123!
+      ORACLE_DATABASE: XEPDB1
+      APP_USER: appuser
+      APP_USER_PASSWORD: App123!
+    volumes:
+      - oracle-data:/opt/oracle/oradata
+      - ./oracle/scott_seed.sql:/initdb/scott_seed.sql:ro
+      - ./oracle/init-scott.sh:/container-entrypoint-initdb.d/001-init-scott.sh:ro
+    ports:
+      - "1521:1521"
+    shm_size: 1g
+    networks:
+      - app-net
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
+
+networks:
+  app-net:
+    driver: bridge
+
+volumes:
+  mysql-data:
+  postgres-data:
+  oracle-data:
+  opengauss-data:
